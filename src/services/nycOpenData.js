@@ -6,6 +6,9 @@ const socrata = axios.create({
   timeout: 12000,
 });
 
+// 693u-uax6 = Parking Meters Locations and Status (36k rows, active lat/long)
+const METERS_DS = '693u-uax6.json';
+
 const boundingBox = (lat, lon, radiusM) => {
   const d = 1 / 111000;
   const latD = radiusM * d;
@@ -13,27 +16,38 @@ const boundingBox = (lat, lon, radiusM) => {
   return { latMin: lat - latD, latMax: lat + latD, lonMin: lon - lonD, lonMax: lon + lonD };
 };
 
+const normalize = (m) => ({
+  meter_id: m.meter_number || m.objectid || String(Math.random()),
+  street_address: [m.on_street, m.from_street ? `(${m.from_street}\u2013${m.to_street})` : '']
+    .filter(Boolean).join(' '),
+  latitude: m.lat,
+  longitude: m.long,
+  meter_rate: '4.00',
+  last_transaction_time: null,
+  status_raw: m.status,
+  meter_hours: m.meter_hours || '',
+  pay_by_cell: m.pay_by_cell_number || '',
+  borough: m.borough || '',
+  side_of_street: m.side_of_street || '',
+});
+
 export const fetchParkingMeters = async (lat, lon, radiusM = 500) => {
   const { latMin, latMax, lonMin, lonMax } = boundingBox(lat, lon, radiusM);
-  // Try numeric comparison first, then string-quoted (dataset-dependent)
-  const queries = [
-    `latitude between ${latMin} and ${latMax} AND longitude between ${lonMin} and ${lonMax}`,
-    `latitude between '${latMin}' and '${latMax}' AND longitude between '${lonMin}' and '${lonMax}'`,
-  ];
-  for (const $where of queries) {
-    try {
-      const { data } = await socrata.get('/mvib-nh9w.json', {
-        params: { $limit: 200, $where },
-      });
-      if (data.length > 0) {
-        console.log(`NYC API: ${data.length} meters from real data`);
-        return data;
-      }
-    } catch (e) {
-      console.warn('NYC API attempt failed:', e.message);
+  try {
+    const { data } = await socrata.get(`/${METERS_DS}`, {
+      params: {
+        $limit: 200,
+        $where: `lat between ${latMin} and ${latMax} AND long between ${lonMin} and ${lonMax} AND status='Active'`,
+      },
+    });
+    if (data.length > 0) {
+      console.log(`[ParkingIQ] Real meters: ${data.length}`);
+      return data.map(normalize);
     }
+  } catch (e) {
+    console.warn('[ParkingIQ] NYC API failed:', e.message);
   }
-  console.warn('NYC API returned no data — using mock');
+  console.warn('[ParkingIQ] NYC API no results — using mock');
   return generateMockMeters(lat, lon);
 };
 
@@ -41,20 +55,6 @@ export const fetchStreetCleaning = async (streetName) => {
   try {
     const { data } = await socrata.get('/qnmj-269j.json', {
       params: { $where: `street like '%${streetName.toUpperCase()}%'`, $limit: 10 },
-    });
-    return data;
-  } catch { return []; }
-};
-
-export const fetchViolationHotspots = async (lat, lon) => {
-  try {
-    const { latMin, latMax } = boundingBox(lat, lon, 500);
-    const { data } = await socrata.get('/pvqr-7yc4.json', {
-      params: {
-        $select: 'violation_code,violation_description',
-        $where: `violation_location_latitude between '${latMin}' and '${latMax}'`,
-        $limit: 100, $order: 'issue_date DESC',
-      },
     });
     return data;
   } catch { return []; }

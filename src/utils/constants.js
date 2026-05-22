@@ -1,5 +1,5 @@
 export const NYC_DATA = {
-  PARKING_METERS_ENDPOINT: 'https://data.cityofnewyork.us/resource/mvib-nh9w.json',
+  PARKING_METERS_ENDPOINT: 'https://data.cityofnewyork.us/resource/693u-uax6.json',
   PARKING_VIOLATIONS_ENDPOINT: 'https://data.cityofnewyork.us/resource/pvqr-7yc4.json',
   STREET_CLEANING_ENDPOINT: 'https://data.cityofnewyork.us/resource/qnmj-269j.json',
   WEATHER_ENDPOINT: 'https://api.open-meteo.com/v1/forecast',
@@ -19,8 +19,5 @@ export const METER_COLORS = {
   LIKELY_AVAILABLE: '#FFC107',
   OCCUPIED: '#F44336',
   UNKNOWN: '#9E9E9E',
+  UNAVAILABLE: '#607D8B',
 };
-
-export const BACKEND_URL = __DEV__
-  ? 'http://localhost:8000'
-  : 'https://your-production-backend.com';

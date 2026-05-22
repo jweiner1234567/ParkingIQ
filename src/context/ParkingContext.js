@@ -1,7 +1,6 @@
 import React, { createContext, useContext, useReducer, useCallback } from 'react';
 import { fetchParkingMeters } from '../services/nycOpenData';
 import { requestLocationPermission, getCurrentLocation, NYC_DEFAULT } from '../services/location';
-import { getMeterStatus } from '../utils/helpers';
 
 const Ctx = createContext();
 
@@ -46,10 +45,10 @@ export function ParkingProvider({ children }) {
       const processed = raw
         .map(m => ({
           ...m,
-          status: getMeterStatus(m.last_transaction_time),
-          lat: parseFloat(m.latitude),
-          lon: parseFloat(m.longitude),
+          lat: parseFloat(m.latitude || m.lat),
+          lon: parseFloat(m.longitude || m.long),
           rate: parseFloat(m.meter_rate) || 4.0,
+          status: m.status_raw === 'Inactive' ? 'unavailable' : (m.predicted_status || 'unknown'),
         }))
         .filter(m => !isNaN(m.lat) && !isNaN(m.lon));
       dispatch({ type: 'SET_METERS', payload: processed });
