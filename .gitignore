@@ -1,0 +1,11 @@
+node_modules/
+.env
+*.keystore
+ios/Pods/
+ios/build/
+android/build/
+android/.gradle/
+backend/__pycache__/
+backend/parkingiq.db
+backend/model.pkl
+.DS_Store
