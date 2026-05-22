@@ -25,9 +25,11 @@ const walkMin = (m, ref) => {
 
 export default function MapScreen({ navigation }) {
   const { state, loadMeters, initLocation, dispatch } = useParkingContext();
-  const timer       = useRef(null);
-  const scopeRef    = useRef('nearby');
+  const timer        = useRef(null);
+  const scopeRef     = useRef('nearby');
   const mapCenterRef = useRef([MAP_CONFIG.DEFAULT_LATITUDE, MAP_CONFIG.DEFAULT_LONGITUDE]);
+  const isFetching   = useRef(false);
+  const metersRef    = useRef([]);
   const [selected,    setSelected]    = useState(null);
   const [prediction,  setPrediction]  = useState(null);
   const [loadingPred, setLoadingPred] = useState(false);
@@ -41,6 +43,7 @@ export default function MapScreen({ navigation }) {
   // Keep refs current so stale closures in setInterval read the latest values
   useEffect(() => { scopeRef.current = scope; }, [scope]);
   useEffect(() => { mapCenterRef.current = mapCenter; }, [mapCenter]);
+  useEffect(() => { metersRef.current = state.meters; }, [state.meters]);
 
   // On mount: load default area immediately, then get real location
   useEffect(() => {
@@ -94,6 +97,8 @@ export default function MapScreen({ navigation }) {
   };
 
   const loadCitywide = async () => {
+    if (isFetching.current) return;
+    isFetching.current = true;
     setScope('citywide');
     dispatch({ type: 'SET_LOADING', payload: true });
     try {
@@ -152,12 +157,12 @@ export default function MapScreen({ navigation }) {
       };
 
       const citywide = raw.map(normRaw).filter(m => !isNaN(m.lat) && !isNaN(m.lon));
-      // Always keep Near Me meters — merge and deduplicate
-      const merged = [...state.meters, ...citywide];
+      // Always keep Near Me meters — merge and deduplicate (use ref to avoid stale closure)
+      const merged = [...metersRef.current, ...citywide];
       const unique = Object.values(Object.fromEntries(merged.map(m => [m.meter_id, m])));
       dispatch({ type: 'SET_METERS', payload: unique });
     } catch(e) { console.warn('citywide fetch failed', e); }
-    finally { dispatch({ type: 'SET_LOADING', payload: false }); }
+    finally { isFetching.current = false; dispatch({ type: 'SET_LOADING', payload: false }); }
   };
 
   // Filtering + sorting
@@ -237,7 +242,7 @@ export default function MapScreen({ navigation }) {
           </TouchableOpacity>
         ))}
         <View style={s.sep} />
-        {[['rate','$ Low'],['status','✓ First'],[null,'Unsorted']].map(([v, lbl]) => (
+        {[['distance','📍 Nearest'],['rate','$ Low'],['status','✓ First'],[null,'Unsorted']].map(([v, lbl]) => (
           <TouchableOpacity key={String(v)}
             style={[s.chip, sortBy === v && s.chipOn]}
             onPress={() => setSortBy(v)}>
@@ -289,15 +294,32 @@ export default function MapScreen({ navigation }) {
                 <View style={s.destPin}><Text style={s.destPinTxt}>D</Text></View>
               </Marker>
             )}
-            {/* Meter dots */}
-            {state.meters.map(m => (
-              <Marker key={m.meter_id} anchor={[m.lat, m.lon]} onClick={() => setSelected(m)}>
-                <View style={[s.dot, { backgroundColor: COLOR[m.status] ?? '#9E9E9E' },
-                  selected?.meter_id === m.meter_id && s.dotSelected]}>
-                  <Text style={s.dotIcon}>{ICON[m.status] ?? '?'}</Text>
-                </View>
-              </Marker>
-            ))}
+            {/* Meter dots — native <div> ensures click events fire reliably on web */}
+            {display.map(m => {
+              const isSel = selected?.meter_id === m.meter_id;
+              return (
+                <Marker key={m.meter_id} anchor={[m.lat, m.lon]}>
+                  <div
+                    onClick={() => setSelected(m)}
+                    style={{
+                      width: isSel ? 30 : 22, height: isSel ? 30 : 22,
+                      borderRadius: '50%',
+                      backgroundColor: COLOR[m.status] ?? '#9E9E9E',
+                      border: `${isSel ? 3 : 2}px solid white`,
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      cursor: 'pointer',
+                      boxShadow: isSel
+                        ? '0 0 0 4px rgba(26,115,232,0.35), 0 2px 6px rgba(0,0,0,0.3)'
+                        : '0 1px 4px rgba(0,0,0,0.25)',
+                      fontSize: 11, color: 'white', fontWeight: 900,
+                      userSelect: 'none', transition: 'all 0.15s',
+                    }}
+                  >
+                    {ICON[m.status] ?? '?'}
+                  </div>
+                </Marker>
+              );
+            })}
           </Map>
 
           {/* Legend */}
