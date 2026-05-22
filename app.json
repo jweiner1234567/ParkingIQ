@@ -1,1 +1,23 @@
-{"name":"ParkingIQ","displayName":"ParkingIQ"}
+{
+  "expo": {
+    "name": "ParkingIQ",
+    "slug": "parkingiq",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "splash": { "resizeMode": "contain", "backgroundColor": "#1a73e8" },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.parkingiq.app",
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "ParkingIQ uses your location to find nearby parking."
+      }
+    },
+    "android": {
+      "package": "com.parkingiq.app",
+      "permissions": ["ACCESS_FINE_LOCATION", "ACCESS_COARSE_LOCATION"]
+    },
+    "plugins": ["expo-location"]
+  }
+}
