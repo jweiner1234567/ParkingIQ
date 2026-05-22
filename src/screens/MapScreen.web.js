@@ -3,205 +3,348 @@ import { View, Text, StyleSheet, TouchableOpacity, ScrollView, ActivityIndicator
 import { Map, Marker } from 'pigeon-maps';
 import { useParkingContext } from '../context/ParkingContext';
 import { predictAvailability } from '../services/api';
-import {
-  haversineDistance, metersToBlocks, formatCurrency,
-  getEnforcementRisk, calcParkingCost,
-} from '../utils/helpers';
-import { MAP_CONFIG, METER_COLORS } from '../utils/constants';
+import { haversineDistance, calcParkingCost, formatCurrency, getEnforcementRisk } from '../utils/helpers';
+import { MAP_CONFIG } from '../utils/constants';
 
-const STATUS_LABELS = {
-  available: '✓ Available',
-  likely_available: '~ Likely Open',
-  occupied: '✗ Occupied',
-  unknown: '? Unknown',
+const COLOR = {
+  available:       '#34A853',
+  likely_available:'#FBBC04',
+  occupied:        '#EA4335',
+  unknown:         '#9E9E9E',
+  unavailable:     '#607D8B',
 };
-const RISK_COLORS = { high: '#F44336', medium: '#FF9800', low: '#4CAF50' };
+const ICON  = { available: '✓', likely_available: '~', occupied: '✗', unknown: '?', unavailable: '○' };
+const LABEL = { available: 'Open', likely_available: 'Likely Open', occupied: 'Occupied', unknown: 'Unknown', unavailable: 'Unavailable' };
+
+const walkMin = (m, ref) => {
+  if (!ref) return null;
+  const d = haversineDistance(m.lat, m.lon, ref.latitude, ref.longitude);
+  return Math.max(1, Math.round(d / 84));
+};
 
 export default function MapScreen({ navigation }) {
-  const { state, loadMeters, initLocation } = useParkingContext();
-  const timer = useRef(null);
-  const [selected, setSelected] = useState(null);
-  const [prediction, setPrediction] = useState(null);
+  const { state, loadMeters, initLocation, dispatch } = useParkingContext();
+  const timer    = useRef(null);
+  const [selected,    setSelected]    = useState(null);
+  const [prediction,  setPrediction]  = useState(null);
+  const [loadingPred, setLoadingPred] = useState(false);
+  const [searchText,  setSearchText]  = useState('');
+  const [filterStatus, setFilterStatus] = useState('all');
+  const [filterMaxRate, setFilterMaxRate] = useState(null);
+  const [sortBy,  setSortBy]  = useState('distance');
+  const [mapCenter, setMapCenter] = useState([MAP_CONFIG.DEFAULT_LATITUDE, MAP_CONFIG.DEFAULT_LONGITUDE]);
+  const [mapZoom,   setMapZoom]   = useState(15);
 
-  const center = state.destination ?? state.userLocation ?? {
-    latitude: MAP_CONFIG.DEFAULT_LATITUDE,
-    longitude: MAP_CONFIG.DEFAULT_LONGITUDE,
-  };
-
+  // On mount: load default area immediately, then get real location
   useEffect(() => {
+    loadMeters(MAP_CONFIG.DEFAULT_LATITUDE, MAP_CONFIG.DEFAULT_LONGITUDE);
     initLocation();
-    loadMeters(center.latitude, center.longitude);
     timer.current = setInterval(
-      () => loadMeters(center.latitude, center.longitude),
+      () => loadMeters(mapCenter[0], mapCenter[1]),
       MAP_CONFIG.UPDATE_INTERVAL,
     );
     return () => clearInterval(timer.current);
   }, []);
 
+  // When user location arrives, recenter + reload
   useEffect(() => {
-    if (!state.destination) return;
-    const arrivalISO = new Date(Date.now() + 15 * 60000).toISOString();
-    predictAvailability(
-      state.destination.latitude, state.destination.longitude,
-      arrivalISO, state.duration,
-    ).then(setPrediction);
-  }, [state.destination, state.duration]);
+    if (!state.userLocation) return;
+    setMapCenter([state.userLocation.latitude, state.userLocation.longitude]);
+    loadMeters(state.userLocation.latitude, state.userLocation.longitude);
+  }, [state.userLocation?.latitude]);
 
-  const colorOf = m => METER_COLORS[m.status] ?? METER_COLORS.UNKNOWN;
-  const now = new Date();
+  // Per-meter prediction when selected
+  useEffect(() => {
+    if (!selected) { setPrediction(null); return; }
+    setLoadingPred(true);
+    const arrival = new Date(Date.now() + 15 * 60000).toISOString();
+    predictAvailability(selected.lat, selected.lon, arrival, state.duration)
+      .then(p => { setPrediction(p); setLoadingPred(false); })
+      .catch(() => setLoadingPred(false));
+  }, [selected?.meter_id]);
+
+  const searchArea = async () => {
+    if (!searchText.trim()) return;
+    try {
+      const res = await fetch(
+        `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(searchText + ' New York')}&format=json&limit=1`,
+        { headers: { 'User-Agent': 'ParkingIQ/1.0' } }
+      );
+      const data = await res.json();
+      if (!data[0]) return;
+      const lat = parseFloat(data[0].lat), lon = parseFloat(data[0].lon);
+      setMapCenter([lat, lon]);
+      dispatch({ type: 'SET_DESTINATION', payload: { latitude: lat, longitude: lon, address: searchText } });
+      loadMeters(lat, lon);
+    } catch {}
+  };
+
+  const goToMyLocation = () => {
+    if (!state.userLocation) return;
+    const { latitude, longitude } = state.userLocation;
+    setMapCenter([latitude, longitude]);
+    loadMeters(latitude, longitude);
+  };
+
+  // Filtering + sorting
+  const userRef = state.userLocation ?? { latitude: mapCenter[0], longitude: mapCenter[1] };
+  let display = state.meters;
+  if (filterStatus !== 'all') display = display.filter(m => m.status === filterStatus);
+  if (filterMaxRate !== null)  display = display.filter(m => m.rate <= filterMaxRate);
+
+  const ORDER = { available: 0, likely_available: 1, occupied: 2, unknown: 3, unavailable: 4 };
+  const sorted = [...display].sort((a, b) => {
+    if (sortBy === 'rate')   return a.rate - b.rate;
+    if (sortBy === 'status') return (ORDER[a.status] ?? 3) - (ORDER[b.status] ?? 3);
+    return haversineDistance(a.lat, a.lon, userRef.latitude, userRef.longitude) -
+           haversineDistance(b.lat, b.lon, userRef.latitude, userRef.longitude);
+  });
+
+  const openCount    = state.meters.filter(m => m.status === 'available').length;
+  const likelyCount  = state.meters.filter(m => m.status === 'likely_available').length;
+  const occupiedCount= state.meters.filter(m => m.status === 'occupied').length;
+  const now  = new Date();
   const risk = getEnforcementRisk(now.getDay(), now.getHours());
-  const available = state.meters.filter(m => m.status === 'available').length;
 
-  const sortedMeters = state.destination
-    ? [...state.meters].sort((a, b) =>
-        haversineDistance(a.lat, a.lon, state.destination.latitude, state.destination.longitude) -
-        haversineDistance(b.lat, b.lon, state.destination.latitude, state.destination.longitude),
-      )
-    : state.meters;
+  const openGoogleMaps = m => window.open(
+    `https://www.google.com/maps/dir/?api=1&destination=${m.lat},${m.lon}&travelmode=walking`, '_blank');
+  const openWaze = m => window.open(
+    `https://waze.com/ul?ll=${m.lat},${m.lon}&navigate=yes`, '_blank');
 
   return (
     <View style={s.root}>
-      {/* Top bar */}
+
+      {/* ── Top bar ── */}
       <View style={s.topBar}>
-        <TouchableOpacity style={s.backBtn} onPress={() => navigation.goBack()}>
-          <Text style={s.backTxt}>‹ Back</Text>
+        <TouchableOpacity style={s.logo} onPress={() => navigation?.navigate?.('Home')}>
+          <Text style={s.logoTxt}>P</Text>
         </TouchableOpacity>
-        <Text style={s.topTitle}>
-          {state.destination ? state.destination.address : 'ParkingIQ'}
-        </Text>
-        {state.isLoading && <ActivityIndicator color="#1a73e8" style={{ marginLeft: 12 }} />}
-        <Text style={s.topMeta}>
-          Live · refreshes 30s
-        </Text>
+        <TextInput
+          style={s.searchInput}
+          placeholder="Search NYC area, address, or landmark..."
+          placeholderTextColor="#aaa"
+          value={searchText}
+          onChangeText={setSearchText}
+          onSubmitEditing={searchArea}
+          returnKeyType="search"
+        />
+        <TouchableOpacity style={s.iconBtn} onPress={searchArea}>
+          <Text style={s.iconBtnTxt}>🔍</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={s.iconBtn} onPress={goToMyLocation} title="My Location">
+          <Text style={s.iconBtnTxt}>📍</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={s.iconBtn} onPress={() => loadMeters(mapCenter[0], mapCenter[1])}>
+          <Text style={s.iconBtnTxt}>⟳</Text>
+        </TouchableOpacity>
+        {state.isLoading && <ActivityIndicator color="#fff" />}
       </View>
 
-      {/* Body */}
+      {/* ── Filter bar ── */}
+      <View style={s.filterBar}>
+        {[
+          ['all',              'All'],
+          ['available',        '✓ Open'],
+          ['likely_available', '~ Likely'],
+          ['occupied',         '✗ Occupied'],
+        ].map(([f, lbl]) => (
+          <TouchableOpacity key={f}
+            style={[s.chip, filterStatus === f && s.chipOn]}
+            onPress={() => setFilterStatus(f)}>
+            <Text style={[s.chipTxt, filterStatus === f && s.chipTxtOn]}>{lbl}</Text>
+          </TouchableOpacity>
+        ))}
+        <View style={s.sep} />
+        {[[null,'Any $'],[2,'≤$2'],[4,'≤$4']].map(([r, lbl]) => (
+          <TouchableOpacity key={String(r)}
+            style={[s.chip, filterMaxRate === r && s.chipOn]}
+            onPress={() => setFilterMaxRate(r)}>
+            <Text style={[s.chipTxt, filterMaxRate === r && s.chipTxtOn]}>{lbl}</Text>
+          </TouchableOpacity>
+        ))}
+        <View style={s.sep} />
+        {[['distance','📍 Near'],['rate','$ Low'],['status','✓ First']].map(([v, lbl]) => (
+          <TouchableOpacity key={v}
+            style={[s.chip, sortBy === v && s.chipOn]}
+            onPress={() => setSortBy(v)}>
+            <Text style={[s.chipTxt, sortBy === v && s.chipTxtOn]}>{lbl}</Text>
+          </TouchableOpacity>
+        ))}
+        <Text style={s.filterCount}>{display.length} of {state.meters.length}</Text>
+      </View>
+
+      {/* ── Body ── */}
       <View style={s.body}>
-        {/* Left: map */}
-        <View style={s.mapPanel}>
+
+        {/* Map */}
+        <View style={s.mapWrap}>
           <Map
             height="100%"
-            center={[center.latitude, center.longitude]}
-            zoom={15}
+            center={mapCenter}
+            zoom={mapZoom}
+            onBoundsChanged={({ center: c, zoom: z }) => { setMapCenter(c); setMapZoom(z); }}
             attribution={false}
           >
-            {/* Destination */}
-            {state.destination && (
-              <Marker anchor={[state.destination.latitude, state.destination.longitude]}>
-                <View style={s.destPin}>
-                  <Text style={s.destPinText}>P</Text>
-                </View>
+            {/* Blue user dot */}
+            {state.userLocation && (
+              <Marker anchor={[state.userLocation.latitude, state.userLocation.longitude]}>
+                <View style={s.userDot} />
               </Marker>
             )}
-
-            {/* Meters */}
+            {/* Red destination pin */}
+            {state.destination && (
+              <Marker anchor={[state.destination.latitude, state.destination.longitude]}>
+                <View style={s.destPin}><Text style={s.destPinTxt}>D</Text></View>
+              </Marker>
+            )}
+            {/* Meter dots */}
             {state.meters.map(m => (
-              <Marker
-                key={m.meter_id}
-                anchor={[m.lat, m.lon]}
-                onClick={() => setSelected(m)}
-              >
-                <View style={[
-                  s.mDot,
-                  { backgroundColor: colorOf(m) },
-                  selected?.meter_id === m.meter_id && s.mDotSelected,
-                ]} />
+              <Marker key={m.meter_id} anchor={[m.lat, m.lon]} onClick={() => setSelected(m)}>
+                <View style={[s.dot, { backgroundColor: COLOR[m.status] ?? '#9E9E9E' },
+                  selected?.meter_id === m.meter_id && s.dotSelected]}>
+                  <Text style={s.dotIcon}>{ICON[m.status] ?? '?'}</Text>
+                </View>
               </Marker>
             ))}
           </Map>
 
-          {/* Legend overlay */}
+          {/* Legend */}
           <View style={s.legend}>
-            {[
-              ['#4CAF50', 'Open'],
-              ['#FFC107', 'Likely'],
-              ['#F44336', 'Taken'],
-            ].map(([c, l]) => (
-              <View key={l} style={s.legendRow}>
-                <View style={[s.legendDot, { backgroundColor: c }]} />
-                <Text style={s.legendLbl}>{l}</Text>
+            {[['#34A853','✓','Open'],['#FBBC04','~','Likely'],['#EA4335','✗','Taken']].map(([c,i,l]) => (
+              <View key={l} style={s.legRow}>
+                <View style={[s.legDot, { backgroundColor: c }]}>
+                  <Text style={s.legIcon}>{i}</Text>
+                </View>
+                <Text style={s.legLbl}>{l}</Text>
               </View>
             ))}
+          </View>
+
+          {/* Stats badge */}
+          <View style={s.badge}>
+            <Text style={s.badgeTxt}>{openCount} open · {state.meters.length} total</Text>
           </View>
         </View>
 
-        {/* Right: info panel */}
-        <View style={s.sidePanel}>
-          {/* Prediction */}
-          {prediction && (
-            <View style={s.predBox}>
-              <Text style={s.predLabel}>Arrives in 15 min →</Text>
-              <Text style={s.predVal}>
-                {Math.round(prediction.availability_probability * 100)}% chance open
-              </Text>
-              <Text style={s.predConf}>
-                Confidence {Math.round((prediction.confidence ?? 0.5) * 100)}%
-                · {prediction.prediction_method}
-              </Text>
-            </View>
-          )}
+        {/* Side panel */}
+        <View style={s.side}>
 
-          {/* Stats */}
-          <View style={s.statsRow}>
-            {[
-              [available, 'Open Now', null],
-              [`${state.duration}m`, 'Duration', null],
-              [risk.toUpperCase(), 'Risk', RISK_COLORS[risk]],
-            ].map(([val, lbl, color]) => (
-              <View key={lbl} style={s.stat}>
-                <Text style={[s.statVal, color && { color }]}>{val}</Text>
-                <Text style={s.statLbl}>{lbl}</Text>
+          {selected ? (
+            /* ── METER DETAIL ── */
+            <View style={s.detail}>
+              <View style={s.detailHd}>
+                <View style={[s.statusPill, { backgroundColor: COLOR[selected.status] }]}>
+                  <Text style={s.statusPillTxt}>{ICON[selected.status]} {LABEL[selected.status]}</Text>
+                </View>
+                <TouchableOpacity onPress={() => setSelected(null)}>
+                  <Text style={s.closeBtn}>✕</Text>
+                </TouchableOpacity>
               </View>
-            ))}
-          </View>
 
-          {/* Selected meter detail */}
-          {selected && (
-            <View style={s.selectedCard}>
-              <Text style={s.selAddr}>{selected.street_address}</Text>
-              <Text style={[s.selStatus, { color: colorOf(selected) }]}>
-                {STATUS_LABELS[selected.status]}
+              <Text style={s.detailAddr}>{selected.street_address}</Text>
+              {selected.borough ? <Text style={s.detailMeta}>{selected.borough}</Text> : null}
+              {selected.meter_hours ? <Text style={s.detailHours}>{selected.meter_hours}</Text> : null}
+              {selected.side_of_street ? <Text style={s.detailMeta}>{selected.side_of_street} side of street</Text> : null}
+
+              <View style={s.infoGrid}>
+                <View style={s.infoCell}>
+                  <Text style={s.infoCellLbl}>Rate</Text>
+                  <Text style={s.infoCellVal}>${selected.rate}/hr</Text>
+                </View>
+                <View style={s.infoCell}>
+                  <Text style={s.infoCellLbl}>Walk from you</Text>
+                  <Text style={[s.infoCellVal, { color: '#1a73e8' }]}>
+                    {walkMin(selected, state.userLocation) ?? '—'} min
+                  </Text>
+                </View>
+                {state.duration ? (
+                  <View style={s.infoCell}>
+                    <Text style={s.infoCellLbl}>Est. cost</Text>
+                    <Text style={s.infoCellVal}>{formatCurrency(calcParkingCost(selected.rate, state.duration))}</Text>
+                  </View>
+                ) : null}
+                {selected.pay_by_cell ? (
+                  <View style={s.infoCell}>
+                    <Text style={s.infoCellLbl}>Pay by cell</Text>
+                    <Text style={s.infoCellVal}>#{selected.pay_by_cell}</Text>
+                  </View>
+                ) : null}
+              </View>
+
+              {/* ML Prediction */}
+              {loadingPred ? (
+                <View style={s.predBox}>
+                  <ActivityIndicator color="#1a73e8" />
+                  <Text style={s.predLoading}>Getting prediction...</Text>
+                </View>
+              ) : prediction ? (
+                <View style={s.predBox}>
+                  <Text style={s.predTitle}>Arrives in 15 min</Text>
+                  <Text style={s.predPct}>
+                    {Math.round(prediction.availability_probability * 100)}% chance open
+                  </Text>
+                  <Text style={s.predConf}>
+                    Confidence: {Math.round((prediction.confidence ?? 0.5) * 100)}%
+                  </Text>
+                  <Text style={s.predModel}>⚡ Gradient Boosting</Text>
+                </View>
+              ) : null}
+
+              {/* Directions */}
+              <View style={s.dirRow}>
+                <TouchableOpacity style={s.dirBtnG} onPress={() => openGoogleMaps(selected)}>
+                  <Text style={s.dirBtnTxt}>🗺 Google Maps</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={s.dirBtnW} onPress={() => openWaze(selected)}>
+                  <Text style={s.dirBtnTxt}>🚗 Waze</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          ) : (
+            /* ── SUMMARY ── */
+            <View style={s.summary}>
+              <Text style={s.summTitle}>
+                {state.isLoading ? 'Loading meters…' : `${state.meters.length} Meters Nearby`}
               </Text>
-              <Text style={s.selCost}>
-                {formatCurrency(calcParkingCost(selected.rate, state.duration))} for {state.duration} min
-                · ${selected.rate}/hr
-              </Text>
-              {state.destination && (
-                <Text style={s.selWalk}>
-                  {metersToBlocks(haversineDistance(
-                    selected.lat, selected.lon,
-                    state.destination.latitude, state.destination.longitude,
-                  ))} blocks to destination
-                </Text>
-              )}
+              <Text style={s.summHint}>Tap a dot or row to see details + directions</Text>
+              <View style={s.summStats}>
+                {[[openCount,'✓','Open','#34A853'],[likelyCount,'~','Likely','#FBBC04'],[occupiedCount,'✗','Taken','#EA4335']].map(([n,i,l,c]) => (
+                  <View key={l} style={s.summStat}>
+                    <Text style={[s.summN, { color: c }]}>{n}</Text>
+                    <Text style={s.summL}>{i} {l}</Text>
+                  </View>
+                ))}
+              </View>
             </View>
           )}
 
           {/* Meter list */}
-          <Text style={s.listTitle}>{state.meters.length} Meters Nearby</Text>
+          <Text style={s.listHd}>
+            {sorted.length} meters · {sortBy === 'distance' ? 'nearest first' : sortBy === 'rate' ? 'cheapest first' : 'available first'}
+          </Text>
           <ScrollView style={s.list}>
-            {sortedMeters.map(m => {
-              const dist = state.destination
-                ? metersToBlocks(haversineDistance(
-                    m.lat, m.lon,
-                    state.destination.latitude, state.destination.longitude,
-                  ))
-                : null;
+            {sorted.map(m => {
+              const wm = walkMin(m, state.userLocation);
               return (
                 <TouchableOpacity
                   key={m.meter_id}
-                  style={[s.meterRow, selected?.meter_id === m.meter_id && s.meterRowActive]}
+                  style={[s.row, selected?.meter_id === m.meter_id && s.rowActive]}
                   onPress={() => setSelected(m)}
                 >
-                  <View style={[s.meterDot, { backgroundColor: colorOf(m) }]} />
-                  <View style={s.meterInfo}>
-                    <Text style={s.meterAddr} numberOfLines={1}>{m.street_address}</Text>
-                    <Text style={s.meterMeta}>
-                      {STATUS_LABELS[m.status]}
-                      {dist != null ? ` · ${dist} blocks` : ''}
-                      {' · '}{formatCurrency(calcParkingCost(m.rate, state.duration))}
+                  <View style={[s.rowIcon, { backgroundColor: COLOR[m.status] ?? '#9E9E9E' }]}>
+                    <Text style={s.rowIconTxt}>{ICON[m.status] ?? '?'}</Text>
+                  </View>
+                  <View style={s.rowInfo}>
+                    <Text style={s.rowAddr} numberOfLines={1}>{m.street_address}</Text>
+                    <Text style={s.rowMeta} numberOfLines={1}>
+                      ${m.rate}/hr
+                      {wm ? ` · ${wm} min walk` : ''}
+                      {m.meter_hours ? ` · ${m.meter_hours.slice(0,22)}` : ''}
                     </Text>
                   </View>
+                  <Text style={[s.rowStatus, { color: COLOR[m.status] }]}>
+                    {ICON[m.status] ?? '?'}
+                  </Text>
                 </TouchableOpacity>
               );
             })}
@@ -214,57 +357,92 @@ export default function MapScreen({ navigation }) {
 
 const s = StyleSheet.create({
   root: { flex: 1, backgroundColor: '#f0f4ff' },
+
   topBar: {
     flexDirection: 'row', alignItems: 'center', backgroundColor: '#1a73e8',
-    paddingHorizontal: 20, paddingVertical: 14, gap: 12,
+    paddingHorizontal: 10, paddingVertical: 8, gap: 8,
   },
-  backBtn: { backgroundColor: 'rgba(255,255,255,0.2)', paddingHorizontal: 14, paddingVertical: 6, borderRadius: 20 },
-  backTxt: { color: '#fff', fontWeight: '700', fontSize: 16 },
-  topTitle: { flex: 1, color: '#fff', fontWeight: '600', fontSize: 15 },
-  topMeta: { color: 'rgba(255,255,255,0.7)', fontSize: 12 },
+  logo: { width: 32, height: 32, borderRadius: 8, backgroundColor: '#fff', alignItems: 'center', justifyContent: 'center' },
+  logoTxt: { color: '#1a73e8', fontWeight: '900', fontSize: 16 },
+  searchInput: {
+    flex: 1, backgroundColor: '#fff', borderRadius: 8,
+    paddingHorizontal: 12, paddingVertical: 7, fontSize: 14, color: '#222',
+  },
+  iconBtn: { padding: 4 },
+  iconBtnTxt: { fontSize: 20 },
+
+  filterBar: {
+    flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff',
+    paddingHorizontal: 8, paddingVertical: 6, borderBottomWidth: 1, borderColor: '#eef', gap: 5,
+  },
+  chip: { paddingHorizontal: 9, paddingVertical: 4, borderRadius: 20, borderWidth: 1, borderColor: '#dde', backgroundColor: '#f8f9ff' },
+  chipOn: { backgroundColor: '#1a73e8', borderColor: '#1a73e8' },
+  chipTxt: { fontSize: 12, color: '#555', fontWeight: '600' },
+  chipTxtOn: { color: '#fff' },
+  sep: { width: 1, height: 18, backgroundColor: '#eee', marginHorizontal: 2 },
+  filterCount: { marginLeft: 'auto', fontSize: 11, color: '#999', fontWeight: '600' },
+
   body: { flex: 1, flexDirection: 'row' },
-  mapPanel: { flex: 1, position: 'relative' },
-  destPin: {
-    width: 28, height: 28, borderRadius: 14, backgroundColor: '#1a73e8',
-    alignItems: 'center', justifyContent: 'center',
-    borderWidth: 2, borderColor: '#fff',
-  },
-  destPinText: { color: '#fff', fontWeight: '900', fontSize: 13 },
-  mDot: { width: 14, height: 14, borderRadius: 7, borderWidth: 2, borderColor: '#fff' },
-  mDotSelected: { width: 18, height: 18, borderRadius: 9, borderWidth: 3 },
-  legend: {
-    position: 'absolute', bottom: 16, left: 16, backgroundColor: '#fff',
-    borderRadius: 10, padding: 10, shadowColor: '#000', shadowOpacity: 0.15, shadowRadius: 6,
-  },
-  legendRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 4 },
-  legendDot: { width: 10, height: 10, borderRadius: 5, marginRight: 6 },
-  legendLbl: { fontSize: 12, color: '#444' },
-  sidePanel: { width: 340, backgroundColor: '#fff', borderLeftWidth: 1, borderLeftColor: '#eef' },
-  predBox: { backgroundColor: '#e8f0fe', padding: 14, margin: 12, borderRadius: 12 },
-  predLabel: { fontSize: 11, color: '#1a73e8', fontWeight: '600' },
-  predVal: { fontSize: 18, fontWeight: '700', color: '#1a73e8', marginTop: 2 },
-  predConf: { fontSize: 11, color: '#555', marginTop: 2 },
-  statsRow: { flexDirection: 'row', justifyContent: 'space-around', paddingVertical: 12, borderBottomWidth: 1, borderColor: '#eef' },
-  stat: { alignItems: 'center' },
-  statVal: { fontSize: 18, fontWeight: '700', color: '#222' },
-  statLbl: { fontSize: 11, color: '#999', marginTop: 2 },
-  selectedCard: {
-    margin: 12, padding: 12, backgroundColor: '#f8f9ff',
-    borderRadius: 10, borderLeftWidth: 4, borderLeftColor: '#1a73e8',
-  },
-  selAddr: { fontSize: 13, fontWeight: '700', color: '#222' },
-  selStatus: { fontSize: 12, fontWeight: '600', marginTop: 2 },
-  selCost: { fontSize: 12, color: '#555', marginTop: 4 },
-  selWalk: { fontSize: 11, color: '#999', marginTop: 2 },
-  listTitle: { fontSize: 12, fontWeight: '700', color: '#999', paddingHorizontal: 12, paddingVertical: 8 },
+
+  mapWrap: { flex: 1, position: 'relative', overflow: 'hidden' },
+  userDot: { width: 14, height: 14, borderRadius: 7, backgroundColor: '#1a73e8', borderWidth: 3, borderColor: '#fff' },
+  destPin: { width: 26, height: 26, borderRadius: 13, backgroundColor: '#EA4335', alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: '#fff' },
+  destPinTxt: { color: '#fff', fontWeight: '900', fontSize: 11 },
+  dot: { width: 22, height: 22, borderRadius: 11, borderWidth: 2, borderColor: '#fff', alignItems: 'center', justifyContent: 'center' },
+  dotSelected: { width: 28, height: 28, borderRadius: 14, borderWidth: 3 },
+  dotIcon: { fontSize: 10, color: '#fff', fontWeight: '900' },
+  legend: { position: 'absolute', bottom: 14, left: 10, backgroundColor: 'rgba(255,255,255,0.95)', borderRadius: 10, padding: 8, gap: 4 },
+  legRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  legDot: { width: 18, height: 18, borderRadius: 9, alignItems: 'center', justifyContent: 'center' },
+  legIcon: { fontSize: 9, color: '#fff', fontWeight: '900' },
+  legLbl: { fontSize: 12, color: '#333', fontWeight: '500' },
+  badge: { position: 'absolute', top: 10, right: 10, backgroundColor: 'rgba(0,0,0,0.55)', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 5 },
+  badgeTxt: { color: '#fff', fontSize: 12, fontWeight: '600' },
+
+  side: { width: 340, backgroundColor: '#fff', borderLeftWidth: 1, borderLeftColor: '#eef', flexDirection: 'column' },
+
+  detail: { padding: 14, borderBottomWidth: 1, borderColor: '#eef' },
+  detailHd: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
+  statusPill: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 20 },
+  statusPillTxt: { color: '#fff', fontWeight: '700', fontSize: 13 },
+  closeBtn: { fontSize: 18, color: '#aaa', paddingHorizontal: 4 },
+  detailAddr: { fontSize: 15, fontWeight: '800', color: '#111', marginBottom: 2 },
+  detailMeta: { fontSize: 12, color: '#888', marginBottom: 1 },
+  detailHours: { fontSize: 11, color: '#666', fontStyle: 'italic', marginBottom: 8 },
+
+  infoGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginVertical: 8 },
+  infoCell: { backgroundColor: '#f8f9ff', borderRadius: 8, padding: 8, minWidth: 100, flex: 1 },
+  infoCellLbl: { fontSize: 10, color: '#999', marginBottom: 2 },
+  infoCellVal: { fontSize: 14, fontWeight: '700', color: '#222' },
+
+  predBox: { backgroundColor: '#e8f0fe', borderRadius: 10, padding: 10, marginTop: 8 },
+  predLoading: { fontSize: 12, color: '#1a73e8', marginLeft: 8 },
+  predTitle: { fontSize: 11, color: '#1a73e8', fontWeight: '600' },
+  predPct: { fontSize: 22, fontWeight: '800', color: '#1a73e8', marginTop: 2 },
+  predConf: { fontSize: 12, color: '#555', marginTop: 2 },
+  predModel: { fontSize: 11, color: '#1a73e8', fontWeight: '700', marginTop: 2 },
+
+  dirRow: { flexDirection: 'row', gap: 8, marginTop: 12 },
+  dirBtnG: { flex: 1, backgroundColor: '#1a73e8', borderRadius: 8, paddingVertical: 9, alignItems: 'center' },
+  dirBtnW: { flex: 1, backgroundColor: '#00BCD4', borderRadius: 8, paddingVertical: 9, alignItems: 'center' },
+  dirBtnTxt: { color: '#fff', fontWeight: '700', fontSize: 12 },
+
+  summary: { padding: 14, borderBottomWidth: 1, borderColor: '#eef' },
+  summTitle: { fontSize: 15, fontWeight: '700', color: '#222', marginBottom: 4 },
+  summHint: { fontSize: 12, color: '#aaa', marginBottom: 10 },
+  summStats: { flexDirection: 'row', justifyContent: 'space-around' },
+  summStat: { alignItems: 'center' },
+  summN: { fontSize: 24, fontWeight: '800' },
+  summL: { fontSize: 11, color: '#888', marginTop: 1 },
+
+  listHd: { fontSize: 11, fontWeight: '700', color: '#999', paddingHorizontal: 12, paddingVertical: 8, backgroundColor: '#fafbff', borderBottomWidth: 1, borderColor: '#eef' },
   list: { flex: 1 },
-  meterRow: {
-    flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 10,
-    borderBottomWidth: 1, borderColor: '#f0f0f0', gap: 10,
-  },
-  meterRowActive: { backgroundColor: '#e8f0fe' },
-  meterDot: { width: 10, height: 10, borderRadius: 5, flexShrink: 0 },
-  meterInfo: { flex: 1 },
-  meterAddr: { fontSize: 13, fontWeight: '600', color: '#222' },
-  meterMeta: { fontSize: 11, color: '#888', marginTop: 2 },
+  row: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 10, borderBottomWidth: 1, borderColor: '#f0f0f0', gap: 10 },
+  rowActive: { backgroundColor: '#e8f0fe' },
+  rowIcon: { width: 26, height: 26, borderRadius: 13, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
+  rowIconTxt: { fontSize: 12, color: '#fff', fontWeight: '900' },
+  rowInfo: { flex: 1 },
+  rowAddr: { fontSize: 13, fontWeight: '600', color: '#111' },
+  rowMeta: { fontSize: 11, color: '#888', marginTop: 1 },
+  rowStatus: { fontSize: 18, fontWeight: '900', flexShrink: 0 },
 });

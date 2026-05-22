@@ -10,18 +10,14 @@ import { initBackendUrl } from './src/services/api';
 const Stack = createStackNavigator();
 
 export default function App() {
-  useEffect(() => {
-    // Fetch the live backend URL from GitHub on every app start
-    initBackendUrl();
-  }, []);
-
+  useEffect(() => { initBackendUrl(); }, []);
   return (
     <ParkingProvider>
       <NavigationContainer>
         <StatusBar style="light" />
-        <Stack.Navigator screenOptions={{ headerShown: false }}>
-          <Stack.Screen name="Home" component={HomeScreen} />
+        <Stack.Navigator screenOptions={{ headerShown: false }} initialRouteName="Map">
           <Stack.Screen name="Map" component={MapScreen} />
+          <Stack.Screen name="Home" component={HomeScreen} />
         </Stack.Navigator>
       </NavigationContainer>
     </ParkingProvider>
