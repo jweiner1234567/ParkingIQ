@@ -31,7 +31,7 @@ export default function MapScreen({ navigation }) {
   const [searchText,  setSearchText]  = useState('');
   const [filterStatus, setFilterStatus] = useState('all');
   const [filterMaxRate, setFilterMaxRate] = useState(null);
-  const [sortBy,  setSortBy]  = useState('distance');
+  const [sortBy,  setSortBy]  = useState(null);
   const [mapCenter, setMapCenter] = useState([MAP_CONFIG.DEFAULT_LATITUDE, MAP_CONFIG.DEFAULT_LONGITUDE]);
   const [mapZoom,   setMapZoom]   = useState(15);
   const [scope, setScope] = useState('nearby'); // 'nearby' | 'citywide'
@@ -199,7 +199,7 @@ export default function MapScreen({ navigation }) {
           </TouchableOpacity>
         ))}
         <View style={s.sep} />
-        {[['distance','📍 Near'],['rate','$ Low'],['status','✓ First'],[null,'None']].map(([v, lbl]) => (
+        {[['rate','$ Low'],['status','✓ First'],[null,'Unsorted']].map(([v, lbl]) => (
           <TouchableOpacity key={String(v)}
             style={[s.chip, sortBy === v && s.chipOn]}
             onPress={() => setSortBy(v)}>
@@ -207,13 +207,23 @@ export default function MapScreen({ navigation }) {
           </TouchableOpacity>
         ))}
         <View style={s.sep} />
-        {[['nearby','📍 Nearby'],['citywide','🗽 All NYC']].map(([v, lbl]) => (
-          <TouchableOpacity key={v}
-            style={[s.chip, scope === v && s.chipOn]}
-            onPress={() => v === 'citywide' ? loadCitywide() : (setScope('nearby'), loadMeters(mapCenter[0], mapCenter[1]))}>
-            <Text style={[s.chipTxt, scope === v && s.chipTxtOn]}>{lbl}</Text>
-          </TouchableOpacity>
-        ))}
+        <TouchableOpacity
+          style={[s.chip, scope === 'nearby' && s.chipOn]}
+          onPress={() => {
+            setScope('nearby');
+            const loc = state.userLocation;
+            if (loc) {
+              setMapCenter([loc.latitude, loc.longitude]);
+              loadMeters(loc.latitude, loc.longitude);
+            }
+          }}>
+          <Text style={[s.chipTxt, scope === 'nearby' && s.chipTxtOn]}>📍 Near Me</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[s.chip, scope === 'citywide' && s.chipOn]}
+          onPress={() => loadCitywide()}>
+          <Text style={[s.chipTxt, scope === 'citywide' && s.chipTxtOn]}>🗽 All NYC</Text>
+        </TouchableOpacity>
         <Text style={s.filterCount}>{display.length} of {state.meters.length}</Text>
       </View>
 
@@ -364,7 +374,7 @@ export default function MapScreen({ navigation }) {
 
           {/* Meter list */}
           <Text style={s.listHd}>
-            {sorted.length} meters{scope === 'citywide' ? ' · All NYC' : ''}{sortBy ? ` · ${sortBy === 'distance' ? 'nearest first' : sortBy === 'rate' ? 'cheapest first' : sortBy === 'status' ? 'available first' : ''}` : ''}
+            {sorted.length} meters{scope === 'citywide' ? ' · All NYC' : ' · Near Me'}{sortBy === 'rate' ? ' · cheapest first' : sortBy === 'status' ? ' · available first' : ''}
           </Text>
           <ScrollView style={s.list}>
             {sorted.map(m => {
