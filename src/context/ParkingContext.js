@@ -48,11 +48,12 @@ export function ParkingProvider({ children }) {
           lat: parseFloat(m.latitude || m.lat),
           lon: parseFloat(m.longitude || m.long),
           rate: parseFloat(m.meter_rate) || 4.0,
-          status: m.status_raw === 'Inactive' ? 'unavailable' : (m.predicted_status || 'unknown'),
+          // status already computed by nycOpenData (available/likely_available/occupied/unavailable/unknown)
+          status: m.status || 'unknown',
         }))
         .filter(m => !isNaN(m.lat) && !isNaN(m.lon));
       dispatch({ type: 'SET_METERS', payload: processed });
-    } catch (e) {
+    } catch {
       dispatch({ type: 'SET_ERROR', payload: 'Failed to load parking data' });
     } finally {
       dispatch({ type: 'SET_LOADING', payload: false });
