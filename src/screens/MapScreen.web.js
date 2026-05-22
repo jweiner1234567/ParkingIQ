@@ -25,7 +25,9 @@ const walkMin = (m, ref) => {
 
 export default function MapScreen({ navigation }) {
   const { state, loadMeters, initLocation, dispatch } = useParkingContext();
-  const timer    = useRef(null);
+  const timer       = useRef(null);
+  const scopeRef    = useRef('nearby');
+  const mapCenterRef = useRef([MAP_CONFIG.DEFAULT_LATITUDE, MAP_CONFIG.DEFAULT_LONGITUDE]);
   const [selected,    setSelected]    = useState(null);
   const [prediction,  setPrediction]  = useState(null);
   const [loadingPred, setLoadingPred] = useState(false);
@@ -36,21 +38,24 @@ export default function MapScreen({ navigation }) {
   const [mapCenter, setMapCenter] = useState([MAP_CONFIG.DEFAULT_LATITUDE, MAP_CONFIG.DEFAULT_LONGITUDE]);
   const [mapZoom,   setMapZoom]   = useState(15);
   const [scope, setScope] = useState('nearby'); // 'nearby' | 'citywide'
+  // Keep refs current so stale closures in setInterval read the latest values
+  useEffect(() => { scopeRef.current = scope; }, [scope]);
+  useEffect(() => { mapCenterRef.current = mapCenter; }, [mapCenter]);
 
   // On mount: load default area immediately, then get real location
   useEffect(() => {
     loadMeters(MAP_CONFIG.DEFAULT_LATITUDE, MAP_CONFIG.DEFAULT_LONGITUDE);
     initLocation();
-    timer.current = setInterval(
-      () => loadMeters(mapCenter[0], mapCenter[1]),
-      MAP_CONFIG.UPDATE_INTERVAL,
-    );
+    timer.current = setInterval(() => {
+      if (scopeRef.current === 'citywide') return; // don't clobber citywide view
+      loadMeters(mapCenterRef.current[0], mapCenterRef.current[1]);
+    }, MAP_CONFIG.UPDATE_INTERVAL);
     return () => clearInterval(timer.current);
   }, []);
 
-  // When user location arrives, recenter + reload
+  // When user location arrives, recenter + reload (skip if user switched to citywide)
   useEffect(() => {
-    if (!state.userLocation) return;
+    if (!state.userLocation || scopeRef.current === 'citywide') return;
     setMapCenter([state.userLocation.latitude, state.userLocation.longitude]);
     loadMeters(state.userLocation.latitude, state.userLocation.longitude);
   }, [state.userLocation?.latitude]);
