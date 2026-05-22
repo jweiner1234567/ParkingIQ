@@ -34,6 +34,7 @@ export default function MapScreen({ navigation }) {
   const [sortBy,  setSortBy]  = useState('distance');
   const [mapCenter, setMapCenter] = useState([MAP_CONFIG.DEFAULT_LATITUDE, MAP_CONFIG.DEFAULT_LONGITUDE]);
   const [mapZoom,   setMapZoom]   = useState(15);
+  const [scope, setScope] = useState('nearby'); // 'nearby' | 'citywide'
 
   // On mount: load default area immediately, then get real location
   useEffect(() => {
@@ -86,6 +87,41 @@ export default function MapScreen({ navigation }) {
     loadMeters(latitude, longitude);
   };
 
+  const loadCitywide = async () => {
+    setScope('citywide');
+    dispatch({ type: 'SET_LOADING', payload: true });
+    try {
+      // Fetch a broad sample from all 5 boroughs (no bounding box)
+      const res = await fetch(
+        'https://data.cityofnewyork.us/resource/693u-uax6.json?$limit=800&$where=status=%27Active%27&$order=meter_number',
+        { headers: { 'Accept': 'application/json' } }
+      );
+      const raw = await res.json();
+      // Simple normalize without block-face join for speed
+      const meters = raw
+        .filter(m => m.lat && m.long)
+        .map(m => {
+          const hash = String(m.meter_number || m.objectid || '').split('').reduce((a,c)=>(a*31+c.charCodeAt(0))|0,7);
+          const p = (Math.abs(hash)*17 + new Date().getHours()*13) % 100;
+          const status = p < 38 ? 'available' : p < 68 ? 'likely_available' : 'occupied';
+          return {
+            meter_id: m.meter_number || m.objectid,
+            street_address: [m.on_street, m.from_street ? `(${m.from_street})` : ''].filter(Boolean).join(' '),
+            latitude: m.lat, longitude: m.long,
+            lat: parseFloat(m.lat), lon: parseFloat(m.long),
+            rate: 4.0, meter_rate: '4.00',
+            meter_hours: m.meter_hours || '',
+            status, status_raw: m.status,
+            borough: m.borough || '',
+            pay_by_cell: m.pay_by_cell_number || '',
+            side_of_street: m.side_of_street || '',
+          };
+        });
+      dispatch({ type: 'SET_METERS', payload: meters });
+    } catch(e) { console.warn('citywide fetch failed', e); }
+    finally { dispatch({ type: 'SET_LOADING', payload: false }); }
+  };
+
   // Filtering + sorting
   const userRef = state.userLocation ?? { latitude: mapCenter[0], longitude: mapCenter[1] };
   let display = state.meters;
@@ -93,7 +129,7 @@ export default function MapScreen({ navigation }) {
   if (filterMaxRate !== null)  display = display.filter(m => m.rate <= filterMaxRate);
 
   const ORDER = { available: 0, likely_available: 1, occupied: 2, unknown: 3, unavailable: 4 };
-  const sorted = [...display].sort((a, b) => {
+  const sorted = sortBy === null ? [...display] : [...display].sort((a, b) => {
     if (sortBy === 'rate')   return a.rate - b.rate;
     if (sortBy === 'status') return (ORDER[a.status] ?? 3) - (ORDER[b.status] ?? 3);
     return haversineDistance(a.lat, a.lon, userRef.latitude, userRef.longitude) -
@@ -116,9 +152,9 @@ export default function MapScreen({ navigation }) {
 
       {/* ── Top bar ── */}
       <View style={s.topBar}>
-        <TouchableOpacity style={s.logo} onPress={() => navigation?.navigate?.('Home')}>
+        <View style={s.logo}>
           <Text style={s.logoTxt}>P</Text>
-        </TouchableOpacity>
+        </View>
         <TextInput
           style={s.searchInput}
           placeholder="Search NYC area, address, or landmark..."
@@ -163,11 +199,19 @@ export default function MapScreen({ navigation }) {
           </TouchableOpacity>
         ))}
         <View style={s.sep} />
-        {[['distance','📍 Near'],['rate','$ Low'],['status','✓ First']].map(([v, lbl]) => (
-          <TouchableOpacity key={v}
+        {[['distance','📍 Near'],['rate','$ Low'],['status','✓ First'],[null,'None']].map(([v, lbl]) => (
+          <TouchableOpacity key={String(v)}
             style={[s.chip, sortBy === v && s.chipOn]}
             onPress={() => setSortBy(v)}>
             <Text style={[s.chipTxt, sortBy === v && s.chipTxtOn]}>{lbl}</Text>
+          </TouchableOpacity>
+        ))}
+        <View style={s.sep} />
+        {[['nearby','📍 Nearby'],['citywide','🗽 All NYC']].map(([v, lbl]) => (
+          <TouchableOpacity key={v}
+            style={[s.chip, scope === v && s.chipOn]}
+            onPress={() => v === 'citywide' ? loadCitywide() : (setScope('nearby'), loadMeters(mapCenter[0], mapCenter[1]))}>
+            <Text style={[s.chipTxt, scope === v && s.chipTxtOn]}>{lbl}</Text>
           </TouchableOpacity>
         ))}
         <Text style={s.filterCount}>{display.length} of {state.meters.length}</Text>
@@ -320,7 +364,7 @@ export default function MapScreen({ navigation }) {
 
           {/* Meter list */}
           <Text style={s.listHd}>
-            {sorted.length} meters · {sortBy === 'distance' ? 'nearest first' : sortBy === 'rate' ? 'cheapest first' : 'available first'}
+            {sorted.length} meters{scope === 'citywide' ? ' · All NYC' : ''}{sortBy ? ` · ${sortBy === 'distance' ? 'nearest first' : sortBy === 'rate' ? 'cheapest first' : sortBy === 'status' ? 'available first' : ''}` : ''}
           </Text>
           <ScrollView style={s.list}>
             {sorted.map(m => {
