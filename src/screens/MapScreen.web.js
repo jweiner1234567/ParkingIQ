@@ -92,31 +92,63 @@ export default function MapScreen({ navigation }) {
     setScope('citywide');
     dispatch({ type: 'SET_LOADING', payload: true });
     try {
-      // One fetch per borough center using the same fetchParkingMeters path
-      // (same normalization, real rates, enforcement-hour status)
-      const BOROUGH_CENTERS = [
-        [40.7549, -73.9840],  // Midtown Manhattan
-        [40.6501, -73.9496],  // Brooklyn
-        [40.7282, -73.7949],  // Queens
-        [40.8448, -73.8648],  // Bronx
-        [40.5795, -74.1502],  // Staten Island
-      ];
-      const results = await Promise.all(
-        BOROUGH_CENTERS.map(([lat, lon]) => fetchParkingMeters(lat, lon, 2000))
+      // Query each borough directly — NO bounding box, no radius.
+      // Fetch at 3 different offsets per borough so the dataset's internal
+      // ordering doesn't cluster everything in one neighborhood.
+      const BOROUGHS = ['Manhattan', 'Brooklyn', 'Queens', 'Bronx', 'Staten Island'];
+      const OFFSETS  = [0, 800, 3000];  // spread across the borough's meter pool
+      const PER_FETCH = 80;             // 80 × 3 offsets × 5 boroughs = 1200 meters max
+
+      const fetches = BOROUGHS.flatMap(borough =>
+        OFFSETS.map(offset =>
+          fetch(
+            'https://data.cityofnewyork.us/resource/693u-uax6.json' +
+            `?$limit=${PER_FETCH}&$offset=${offset}` +
+            `&$where=${encodeURIComponent("status='Active' AND borough='" + borough + "'")}`,
+            { headers: { Accept: 'application/json' } }
+          ).then(r => r.json()).catch(() => [])
+        )
       );
-      // Flatten, process same way ParkingContext does, deduplicate
-      const raw = results.flat().filter(m => !m.is_mock);
-      const process = m => ({
-        ...m,
-        lat: parseFloat(m.latitude || m.lat),
-        lon: parseFloat(m.longitude || m.long),
-        rate: parseFloat(m.meter_rate) || 4.0,
-        status: m.status || 'unknown',
-      });
-      const citywide = raw.map(process).filter(m => !isNaN(m.lat) && !isNaN(m.lon));
-      // Merge with current Near Me meters so they don't disappear
-      const existing = state.meters.map(process);
-      const merged = [...existing, ...citywide];
+      const batches = await Promise.all(fetches);
+      const raw = batches.flat().filter(m => m.lat && m.long);
+
+      const hour = new Date().getHours();
+      const dow  = new Date().getDay();
+      const normRaw = m => {
+        const mid  = m.meter_number || m.objectid || '';
+        const hash = mid.split('').reduce((a, c) => (a * 31 + c.charCodeAt(0)) | 0, 7);
+        const p    = (Math.abs(hash) * 17 + hour * 13) % 100;
+        const mh   = (m.meter_hours || '').toUpperCase();
+        const isWeekend = dow === 0 || dow === 6;
+        const afterHours = hour < 7 || hour >= 19;
+        let status;
+        if (afterHours ||
+            (dow === 0 && (mh.includes('MON-SAT') || mh.includes('MON-FRI'))) ||
+            (isWeekend  &&  mh.includes('MON-FRI'))) {
+          status = 'available';
+        } else {
+          status = p < 38 ? 'available' : p < 68 ? 'likely_available' : 'occupied';
+        }
+        return {
+          meter_id: mid || String(Math.random()),
+          street_address: [m.on_street,
+            m.from_street ? '(' + m.from_street + '–' + m.to_street + ')' : ''
+          ].filter(Boolean).join(' '),
+          latitude: m.lat, longitude: m.long,
+          lat: parseFloat(m.lat), lon: parseFloat(m.long),
+          meter_rate: '4.00', rate: 4.0,
+          meter_hours: m.meter_hours || '',
+          status, status_raw: m.status,
+          borough: m.borough || '',
+          pay_by_cell: m.pay_by_cell_number || '',
+          side_of_street: m.side_of_street || '',
+          last_transaction_time: null,
+        };
+      };
+
+      const citywide = raw.map(normRaw).filter(m => !isNaN(m.lat) && !isNaN(m.lon));
+      // Always keep Near Me meters — merge and deduplicate
+      const merged = [...state.meters, ...citywide];
       const unique = Object.values(Object.fromEntries(merged.map(m => [m.meter_id, m])));
       dispatch({ type: 'SET_METERS', payload: unique });
     } catch(e) { console.warn('citywide fetch failed', e); }
