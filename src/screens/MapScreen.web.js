@@ -190,6 +190,20 @@ export default function MapScreen({ navigation }) {
   const openWaze = m => window.open(
     `https://waze.com/ul?ll=${m.lat},${m.lon}&navigate=yes`, '_blank');
 
+  // pigeon-maps captures mousedown so child onClick is unreliable.
+  // Instead, use the Map's onClick (gives lat/lon) and find nearest visible meter.
+  const handleMapClick = ({ latLng }) => {
+    const [lat, lon] = latLng;
+    // Tolerance scales with zoom: ~15px hit target
+    const tol = 0.0005 * Math.pow(2, Math.max(0, 15 - mapZoom));
+    let nearest = null, minDist = Infinity;
+    display.forEach(m => {
+      const d = Math.sqrt((m.lat - lat) ** 2 + (m.lon - lon) ** 2);
+      if (d < tol && d < minDist) { minDist = d; nearest = m; }
+    });
+    if (nearest) setSelected(nearest);
+  };
+
   return (
     <View style={s.root}>
 
@@ -280,6 +294,7 @@ export default function MapScreen({ navigation }) {
             center={mapCenter}
             zoom={mapZoom}
             onBoundsChanged={({ center: c, zoom: z }) => { setMapCenter(c); setMapZoom(z); }}
+            onClick={handleMapClick}
             attribution={false}
           >
             {/* Blue user dot */}
@@ -300,7 +315,6 @@ export default function MapScreen({ navigation }) {
               return (
                 <Marker key={m.meter_id} anchor={[m.lat, m.lon]}>
                   <div
-                    onClick={() => setSelected(m)}
                     style={{
                       width: isSel ? 30 : 22, height: isSel ? 30 : 22,
                       borderRadius: '50%',
