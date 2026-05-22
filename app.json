@@ -6,7 +6,10 @@
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
-    "splash": { "resizeMode": "contain", "backgroundColor": "#1a73e8" },
+    "splash": {
+      "resizeMode": "contain",
+      "backgroundColor": "#1a73e8"
+    },
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.parkingiq.app",
@@ -16,8 +19,23 @@
     },
     "android": {
       "package": "com.parkingiq.app",
-      "permissions": ["ACCESS_FINE_LOCATION", "ACCESS_COARSE_LOCATION"]
+      "permissions": [
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION"
+      ]
     },
-    "plugins": ["expo-location"]
+    "plugins": [
+      "expo-location"
+    ],
+    "web": {
+      "bundler": "metro",
+      "output": "single",
+      "favicon": "./assets/icon.png"
+    },
+    "platforms": [
+      "ios",
+      "android",
+      "web"
+    ]
   }
 }
